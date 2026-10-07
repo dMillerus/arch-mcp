@@ -9,6 +9,7 @@ import re
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -119,6 +120,23 @@ async def test_mirror_speed(mirror_url: Optional[str] = None) -> Dict[str, Any]:
         mirrors_to_test = []
 
         if mirror_url:
+            # SSRF guard: only http(s) URLs whose host is in the mirrorlist
+            listing = await list_active_mirrors()
+            if "error" in listing:
+                return listing
+            allowed_hosts = set()
+            for entry in listing.get("active_mirrors", []) + listing.get("commented_mirrors", []):
+                host = urlparse(entry["url"]).hostname
+                if host:
+                    allowed_hosts.add(host.lower())
+            parsed = urlparse(mirror_url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname \
+                    or parsed.hostname.lower() not in allowed_hosts:
+                return create_error_response(
+                    "InvalidMirror",
+                    "mirror_url must be an http(s) URL whose host appears in "
+                    f"{MIRRORLIST_PATH}"
+                )
             mirrors_to_test = [mirror_url]
         else:
             # Get active mirrors
@@ -136,7 +154,7 @@ async def test_mirror_speed(mirror_url: Optional[str] = None) -> Dict[str, Any]:
 
         results = []
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=not mirror_url) as client:
             for mirror in mirrors_to_test:
                 # Replace $repo and $arch with actual values for testing
                 test_url = mirror.replace("$repo", "core").replace("$arch", "x86_64")

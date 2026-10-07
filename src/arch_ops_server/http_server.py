@@ -9,7 +9,7 @@ HTTP-based MCP clients, while keeping STDIO transport for Docker MCP Catalog.
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import Any, Optional
 
 try:
     from starlette.applications import Starlette
@@ -498,6 +498,46 @@ async def handle_sse_raw(scope: dict, receive: Any, send: Any) -> None:
         raise
 
 
+ALLOWED_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+async def _reject(send: Any, status: int, message: str) -> None:
+    """Send a small JSON error response."""
+    import json as _json
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [[b"content-type", b"application/json"]],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": _json.dumps({"error": message}).encode("utf-8"),
+    })
+
+
+def _host_allowed(scope: dict) -> bool:
+    """True if the Host header names a loopback host (DNS-rebinding defense)."""
+    host = ""
+    for k, v in scope.get("headers", []):
+        if k.lower() == b"host":
+            host = v.decode("latin-1").strip().lower()
+            break
+    if host.startswith("["):  # [::1]:port
+        hostname = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        hostname = host.split(":", 1)[0]
+    else:
+        hostname = host
+    return hostname in ALLOWED_HOSTS
+
+
+def _content_type_is_json(scope: dict) -> bool:
+    for k, v in scope.get("headers", []):
+        if k.lower() == b"content-type":
+            return v.decode("latin-1").split(";", 1)[0].strip().lower() == "application/json"
+    return False
+
+
 async def handle_sse(request: Request) -> None:
     """
     Starlette request handler wrapper for SSE endpoint.
@@ -505,6 +545,8 @@ async def handle_sse(request: Request) -> None:
     Args:
         request: Starlette Request object
     """
+    if not _host_allowed(request.scope):
+        return await _reject(request._send, 403, "Forbidden host")
     await handle_sse_raw(request.scope, request.receive, request._send)
 
 
@@ -551,6 +593,8 @@ async def handle_messages(request: Request) -> None:
     Args:
         request: Starlette Request object
     """
+    if not _host_allowed(request.scope):
+        return await _reject(request._send, 403, "Forbidden host")
     await handle_messages_raw(request.scope, request.receive, request._send)
 
 
@@ -624,7 +668,7 @@ async def handle_mcp_raw(scope: dict, receive: Any, send: Any) -> None:
                     await send({
                         "type": "http.response.start",
                         "status": 200,
-                        "headers": [[b"content-type", b"application/json"], [b"access-control-allow-origin", b"*"]],
+                        "headers": [[b"content-type", b"application/json"]],
                     })
                     await send({
                         "type": "http.response.body",
@@ -731,6 +775,10 @@ async def handle_mcp(request: Request) -> None:
     Args:
         request: Starlette Request object
     """
+    if not _host_allowed(request.scope):
+        return await _reject(request._send, 403, "Forbidden host")
+    if request.method == "POST" and not _content_type_is_json(request.scope):
+        return await _reject(request._send, 415, "Content-Type must be application/json")
     await handle_mcp_raw(request.scope, request.receive, request._send)
 
 
@@ -770,8 +818,9 @@ def create_app() -> Any:
     # Add CORS middleware for browser-based clients
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=[
+            o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
+        ],
         allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
         allow_headers=["*"],
         expose_headers=["*"],
@@ -783,21 +832,31 @@ def create_app() -> Any:
     return app
 
 
-async def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8220
+
+
+def resolve_bind() -> tuple:
+    """Resolve (host, port) from ARCH_OPS_HOST/ARCH_OPS_PORT env vars, defaulting to loopback:8220."""
+    return os.getenv("ARCH_OPS_HOST", DEFAULT_HOST), int(os.getenv("ARCH_OPS_PORT", str(DEFAULT_PORT)))
+
+
+async def run_http_server(host: Optional[str] = None, port: Optional[int] = None) -> None:
     """
     Run MCP server with HTTP transport.
 
     Args:
-        host: Host to bind to (default: 0.0.0.0)
-        port: Port to listen on (default: 8080, or PORT env var)
+        host: Host to bind to (default: ARCH_OPS_HOST env var, else 127.0.0.1)
+        port: Port to listen on (default: ARCH_OPS_PORT env var, else 8220)
     """
     if not STARLETTE_AVAILABLE:
         logger.error("HTTP transport requires starlette and uvicorn packages")
         logger.error("Install with: pip install starlette uvicorn")
         raise ImportError("starlette not available")
 
-    # Get port from environment if specified (Smithery sets this)
-    port = int(os.getenv("PORT", port))
+    env_host, env_port = resolve_bind()
+    host = host if host is not None else env_host
+    port = port if port is not None else env_port
 
     logger.info(f"Starting Arch Linux MCP HTTP Server on {host}:{port}")
     logger.info("Transport: Server-Sent Events (SSE)")

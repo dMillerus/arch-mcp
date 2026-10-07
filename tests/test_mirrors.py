@@ -17,6 +17,10 @@ from arch_ops_server.mirrors import (
     check_mirrorlist_health,
 )
 
+# Imported production function whose name starts with test_; without this pytest
+# collects it and runs it against every live mirror (~8 min).
+test_mirror_speed.__test__ = False
+
 
 class TestMirrorList:
     """Test mirrorlist reading and parsing."""
@@ -84,6 +88,8 @@ class TestMirrorSpeed:
         mock_response.status_code = 200
         
         with patch("httpx.AsyncClient") as mock_client, \
+             patch("arch_ops_server.mirrors.list_active_mirrors", AsyncMock(
+                 return_value={"active_mirrors": [{"url": mirror_url}]})), \
              patch("time.time", side_effect=[0.0, 0.05]):  # 50ms latency
             mock_client.return_value.__aenter__.return_value.head = AsyncMock(
                 return_value=mock_response
@@ -102,7 +108,9 @@ class TestMirrorSpeed:
         """Test mirror speed with timeout."""
         mirror_url = "https://slow-mirror.example.com/$repo/os/$arch"
         
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("httpx.AsyncClient") as mock_client, \
+             patch("arch_ops_server.mirrors.list_active_mirrors", AsyncMock(
+                 return_value={"active_mirrors": [{"url": mirror_url}]})):
             mock_client.return_value.__aenter__.return_value.head = AsyncMock(
                 side_effect=httpx.TimeoutException("Timeout")
             )

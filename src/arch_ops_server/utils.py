@@ -144,6 +144,17 @@ async def run_command(
         
     except asyncio.TimeoutError:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
+        if is_sudo_command:
+            logger.warning(
+                "Timed out running a sudo command; the privileged child is left "
+                "running (cannot be killed from an unprivileged process)"
+            )
+        else:
+            try:
+                process.kill()
+                await process.wait()
+            except (ProcessLookupError, PermissionError):
+                pass
         raise
     except Exception as e:
         logger.error(f"Command execution failed: {e}")

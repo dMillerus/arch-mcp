@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 import httpx
 
+from .validation import validate_package_names
 from .utils import (
     IS_ARCH,
     run_command,
@@ -40,6 +41,11 @@ async def get_official_package_info(package_name: str) -> Dict[str, Any]:
     Returns:
         Dict with package information
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     logger.info(f"Fetching info for official package: {package_name}")
     
     # Try local pacman first if on Arch
@@ -65,7 +71,7 @@ async def _get_package_info_local(package_name: str) -> Optional[Dict[str, Any]]
     """
     try:
         exit_code, stdout, stderr = await run_command(
-            ["pacman", "-Si", package_name],
+            ["pacman", "-Si", "--", package_name],
             timeout=5,
             check=False
         )
@@ -336,6 +342,11 @@ async def remove_package(
     Returns:
         Dict with removal status and information
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -351,7 +362,7 @@ async def remove_package(
     logger.info(f"Removing package: {package_name} (deps={remove_dependencies}, force={force})")
 
     # Build command based on options
-    cmd = ["sudo", "pacman"]
+    cmd = ["sudo", "-n", "pacman"]
 
     if force:
         cmd.extend(["-Rdd"])  # Force remove, skip dependency checks
@@ -360,7 +371,7 @@ async def remove_package(
     else:
         cmd.extend(["-R"])  # Basic removal
 
-    cmd.extend(["--noconfirm", package_name])
+    cmd.extend(["--noconfirm", "--", package_name])
 
     try:
         exit_code, stdout, stderr = await run_command(
@@ -409,6 +420,11 @@ async def remove_packages_batch(
     Returns:
         Dict with removal status
     """
+    try:
+        validate_package_names(package_names)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -430,14 +446,14 @@ async def remove_packages_batch(
     logger.info(f"Batch removing {len(package_names)} packages (deps={remove_dependencies})")
 
     # Build command
-    cmd = ["sudo", "pacman"]
+    cmd = ["sudo", "-n", "pacman"]
 
     if remove_dependencies:
         cmd.extend(["-Rs"])
     else:
         cmd.extend(["-R"])
 
-    cmd.extend(["--noconfirm"] + package_names)
+    cmd.extend(["--noconfirm", "--"] + package_names)
 
     try:
         exit_code, stdout, stderr = await run_command(
@@ -493,6 +509,11 @@ async def remove_packages(
     Returns:
         Dict with removal status and information
     """
+    try:
+        validate_package_names(packages)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -658,8 +679,13 @@ async def remove_orphans(dry_run: bool = True, exclude: Optional[List[str]] = No
         }
 
     try:
+        validate_package_names(orphans)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
+    try:
         # Remove orphans using pacman -Rns
-        cmd = ["sudo", "pacman", "-Rns", "--noconfirm"] + orphans
+        cmd = ["sudo", "-n", "pacman", "-Rns", "--noconfirm", "--"] + orphans
 
         exit_code, stdout, stderr = await run_command(
             cmd,
@@ -777,7 +803,7 @@ async def find_package_owner(file_path: str) -> Dict[str, Any]:
 
     try:
         exit_code, stdout, stderr = await run_command(
-            ["pacman", "-Qo", file_path],
+            ["pacman", "-Qo", "--", file_path],
             timeout=5,
             check=False
         )
@@ -828,6 +854,11 @@ async def list_package_files(package_name: str, filter_pattern: Optional[str] = 
     Returns:
         Dict with list of files
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -840,11 +871,20 @@ async def list_package_files(package_name: str, filter_pattern: Optional[str] = 
             "pacman command not found"
         )
 
+    pattern_re = None
+    if filter_pattern:
+        if len(filter_pattern) > 200:
+            return create_error_response("ValidationError", "filter_pattern too long (max 200 chars)")
+        try:
+            pattern_re = re.compile(filter_pattern)
+        except re.error as e:
+            return create_error_response("ValidationError", f"Invalid filter_pattern: {e}")
+
     logger.info(f"Listing files for package: {package_name}")
 
     try:
         exit_code, stdout, stderr = await run_command(
-            ["pacman", "-Ql", package_name],
+            ["pacman", "-Ql", "--", package_name],
             timeout=10,
             check=False
         )
@@ -869,7 +909,7 @@ async def list_package_files(package_name: str, filter_pattern: Optional[str] = 
 
                 # Apply filter if provided
                 if filter_pattern:
-                    if re.search(filter_pattern, file_path):
+                    if pattern_re.search(file_path):
                         files.append(file_path)
                 else:
                     files.append(file_path)
@@ -918,7 +958,7 @@ async def search_package_files(filename_pattern: str) -> Dict[str, Any]:
     try:
         # First check if file database is synced
         exit_code, stdout, stderr = await run_command(
-            ["pacman", "-F", filename_pattern],
+            ["pacman", "-F", "--", filename_pattern],
             timeout=30,
             check=False
         )
@@ -1058,6 +1098,11 @@ async def verify_package_integrity(package_name: str, thorough: bool = False) ->
     Returns:
         Dict with verification results
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -1073,7 +1118,7 @@ async def verify_package_integrity(package_name: str, thorough: bool = False) ->
     logger.info(f"Verifying package integrity: {package_name} (thorough={thorough})")
 
     try:
-        cmd = ["pacman", "-Qkk" if thorough else "-Qk", package_name]
+        cmd = ["pacman", "-Qkk" if thorough else "-Qk", "--", package_name]
 
         exit_code, stdout, stderr = await run_command(
             cmd,
@@ -1196,7 +1241,7 @@ async def list_group_packages(group_name: str) -> Dict[str, Any]:
 
     try:
         exit_code, stdout, stderr = await run_command(
-            ["pacman", "-Sg", group_name],
+            ["pacman", "-Sg", "--", group_name],
             timeout=10,
             check=False
         )
@@ -1301,6 +1346,11 @@ async def mark_as_explicit(package_name: str) -> Dict[str, Any]:
     Returns:
         Dict with operation status
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -1317,7 +1367,7 @@ async def mark_as_explicit(package_name: str) -> Dict[str, Any]:
 
     try:
         exit_code, stdout, stderr = await run_command(
-            ["sudo", "pacman", "-D", "--asexplicit", package_name],
+            ["sudo", "-n", "pacman", "-D", "--asexplicit", "--", package_name],
             timeout=10,
             check=False,
             skip_sudo_check=True
@@ -1355,6 +1405,11 @@ async def mark_as_dependency(package_name: str) -> Dict[str, Any]:
     Returns:
         Dict with operation status
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     if not IS_ARCH:
         return create_error_response(
             "NotSupported",
@@ -1371,7 +1426,7 @@ async def mark_as_dependency(package_name: str) -> Dict[str, Any]:
 
     try:
         exit_code, stdout, stderr = await run_command(
-            ["sudo", "pacman", "-D", "--asdeps", package_name],
+            ["sudo", "-n", "pacman", "-D", "--asdeps", "--", package_name],
             timeout=10,
             check=False,
             skip_sudo_check=True

@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Literal
 import httpx
 from datetime import datetime
 
+from .validation import validate_package_names
 from .utils import (
     create_error_response, 
     add_aur_warning, 
@@ -663,6 +664,11 @@ async def install_package_secure(package_name: str) -> Dict[str, Any]:
     Returns:
         Dict with installation status and security analysis
     """
+    try:
+        validate_package_names(package_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+
     logger.info(f"Starting secure installation workflow for: {package_name}")
     
     # Only supported on Arch Linux
@@ -737,7 +743,7 @@ async def install_package_secure(package_name: str) -> Dict[str, Any]:
         try:
             result["messages"].append("📦 Installing from official repository...")
             exit_code, stdout, stderr = await run_command(
-                ["sudo", "pacman", "-S", "--noconfirm", package_name],
+                ["sudo", "-n", "pacman", "-S", "--noconfirm", "--", package_name],
                 timeout=300,  # 5 minutes for installation
                 check=False
             )
@@ -878,7 +884,7 @@ async def install_package_secure(package_name: str) -> Dict[str, Any]:
     try:
         # Install with --noconfirm flag
         exit_code, stdout, stderr = await run_command(
-            [aur_helper, "-S", "--noconfirm", package_name],
+            [aur_helper, "-S", "--noconfirm", "--", package_name],
             timeout=600,  # 10 minutes for AUR package build
             check=False
         )

@@ -124,6 +124,7 @@ class TestCommandExecution:
 
         mock_process = MagicMock()
         mock_process.communicate = _slow_communicate
+        mock_process.wait = AsyncMock(return_value=-9)
 
         async def _create_slow_subprocess(*args, **kwargs):
             return mock_process
@@ -133,6 +134,28 @@ class TestCommandExecution:
                 await run_command(
                     ["sleep", "10"], timeout=0.1, skip_sudo_check=True
                 )
+        mock_process.kill.assert_called_once()
+        mock_process.wait.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_command_timeout_sudo_not_killed(self):
+        """A timed-out sudo child is left alone; the timeout still propagates."""
+        async def _slow_communicate():
+            await asyncio.sleep(10)
+
+        mock_process = MagicMock()
+        mock_process.communicate = _slow_communicate
+        mock_process.kill.side_effect = PermissionError
+
+        async def _create(*args, **kwargs):
+            return mock_process
+
+        with patch("asyncio.create_subprocess_exec", new=_create):
+            with pytest.raises(asyncio.TimeoutError):
+                await run_command(
+                    ["sudo", "-n", "true"], timeout=0.1, skip_sudo_check=True
+                )
+        mock_process.kill.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_run_command_sudo_password_not_cached(self):

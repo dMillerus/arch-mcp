@@ -6,6 +6,7 @@ This module contains the MCP server configuration, resources, tools, and prompts
 for the Arch Linux MCP server.
 """
 
+import copy
 import logging
 import json
 from typing import Any
@@ -23,6 +24,8 @@ from mcp.types import (
     PromptMessage,
     GetPromptResult,
 )
+
+from .safety import readonly_enabled, check_allowed, WRITE_TOOLS, MIXED_TOOLS
 
 from . import (
     # Wiki functions
@@ -618,7 +621,7 @@ async def list_tools() -> list[Tool]:
     Returns:
         List of Tool objects describing available operations
     """
-    return [
+    tools = [
         # Wiki tools
         Tool(
             name="search_archwiki",
@@ -1081,6 +1084,25 @@ async def list_tools() -> list[Tool]:
         ),
     ]
 
+    if not readonly_enabled():
+        return tools
+
+    # Read-only gate: hide write tools, narrow mixed tools to their read actions.
+    filtered = []
+    for tool in tools:
+        if tool.name in WRITE_TOOLS:
+            continue
+        if tool.name in MIXED_TOOLS:
+            allowed = sorted(MIXED_TOOLS[tool.name])
+            schema = copy.deepcopy(tool.inputSchema)
+            schema["properties"]["action"]["enum"] = allowed
+            tool = tool.model_copy(update={
+                "inputSchema": schema,
+                "description": tool.description + " (Server is read-only: only the 'list' action is available.)",
+            })
+        filtered.append(tool)
+    return filtered
+
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | ImageContent | EmbeddedResource]:
@@ -1097,7 +1119,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
     Raises:
         ValueError: If tool name is unknown
     """
-    logger.info(f"Calling tool: {name} with args: {arguments}")
+    msg = check_allowed(name, arguments)
+    if msg:
+        logger.warning(f"Refused tool call in read-only mode: {name}")
+        return [TextContent(type="text", text=json.dumps({"error": True, "type": "ReadOnly", "message": msg, "readonly": True}))]
+
+    logger.info(f"Calling tool: {name}")
+    logger.debug(f"Tool arguments: {arguments}")
     
     if name == "search_archwiki":
         query = arguments["query"]

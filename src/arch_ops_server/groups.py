@@ -2,6 +2,7 @@
 """Unified group management tool."""
 
 from typing import Literal, Optional
+from .validation import validate_package_names
 from .utils import run_command, create_error_response, IS_ARCH
 
 
@@ -32,7 +33,11 @@ async def _list_groups() -> dict:
 
 
 async def _list_packages_in_group(group_name: str) -> dict:
-    exit_code, stdout, stderr = await run_command(["pacman", "-Sg", group_name], timeout=10)
+    try:
+        validate_package_names(group_name)
+    except ValueError as e:
+        return create_error_response("ValidationError", str(e))
+    exit_code, stdout, stderr = await run_command(["pacman", "-Sg", "--", group_name], timeout=10)
     if exit_code != 0:
         return create_error_response(f"Failed: {stderr}")
     packages = []
