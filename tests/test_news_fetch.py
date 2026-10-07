@@ -4,6 +4,8 @@
 import pytest
 from arch_ops_server.news import fetch_news
 
+pytestmark = pytest.mark.network  # live archlinux.org feed
+
 
 async def test_fetch_news_latest():
     """Test latest news fetching."""

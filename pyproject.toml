@@ -1,6 +1,6 @@
 [project]
 name = "arch-ops-server"
-version = "3.4.0"
+version = "3.4.0+ws0.1"
 description = "MCP server bridging AI assistants with Arch Linux ecosystem (Wiki, AUR, official repos)"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { text = "GPL-3.0-only OR MIT" }
@@ -57,6 +57,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["network: hits the internet"]
 addopts = [
   "-v",
   "--strict-markers",
